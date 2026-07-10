@@ -1,0 +1,7 @@
+This project includes an independently adapted xAI OAuth integration informed by
+NousResearch/hermes-agent, which is MIT licensed. It also depends on
+@electron/asar, which is MIT licensed. Preserve applicable upstream notices
+when redistributing derivative code or bundled dependencies.
+
+This is an unofficial integration. It is not affiliated with, endorsed by, or
+supported by OpenAI, xAI, ChatGPT, Codex, or Nous Research.

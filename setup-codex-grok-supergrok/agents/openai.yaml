@@ -1,0 +1,4 @@
+interface:
+  display_name: "Setup Grok 4.5 in Codex"
+  short_description: "Connect SuperGrok for root delegation"
+  default_prompt: "Use $setup-codex-grok-supergrok to connect SuperGrok and enable native Grok delegation from a supported root model."

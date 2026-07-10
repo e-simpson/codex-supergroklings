@@ -1,0 +1,6 @@
+interface:
+  display_name: "Grok Subagents"
+  short_description: "Delegate bounded work to Grok 4.5"
+  default_prompt: "Use $grok-subagents to delegate bounded independent work to Grok 4.5 and synthesize the results."
+policy:
+  allow_implicit_invocation: __ALLOW_IMPLICIT_INVOCATION__

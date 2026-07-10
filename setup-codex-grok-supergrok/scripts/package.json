@@ -1,0 +1,11 @@
+{
+  "name": "codex-xai-grok-oauth-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "bun setup.js"
+  },
+  "dependencies": {
+    "@electron/asar": "3.2.18"
+  }
+}
