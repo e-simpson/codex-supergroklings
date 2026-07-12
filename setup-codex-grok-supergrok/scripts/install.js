@@ -15,12 +15,14 @@ const installDir = join(codexHome, "xai-grok-oauth");
 const helperSource = new URL("./xai-grok-oauth.js", import.meta.url).pathname;
 const proxySource = new URL("./xai-codex-proxy.js", import.meta.url).pathname;
 const desktopPatchSource = new URL("./patch-desktop-grok-provider.js", import.meta.url).pathname;
+const desktopPatchTestSource = new URL("./test-desktop-patcher.js", import.meta.url).pathname;
 const packageSource = new URL("./package.json", import.meta.url).pathname;
 const lockSource = new URL("./bun.lock", import.meta.url).pathname;
 const grokSubagentsSourceDir = new URL("../assets/grok-subagents", import.meta.url).pathname;
 const helperTarget = join(installDir, "xai-grok-oauth.js");
 const proxyTarget = join(installDir, "xai-codex-proxy.js");
 const desktopPatchTarget = join(installDir, "patch-desktop-grok-provider.js");
+const desktopPatchTestTarget = join(installDir, "test-desktop-patcher.js");
 const packageTarget = join(installDir, "package.json");
 const lockTarget = join(installDir, "bun.lock");
 const launcherTarget = join(installDir, "codex-grok.js");
@@ -400,12 +402,14 @@ mkdirSync(installDir, { recursive: true, mode: 0o700 });
 copyFileSync(helperSource, helperTarget);
 copyFileSync(proxySource, proxyTarget);
 copyFileSync(desktopPatchSource, desktopPatchTarget);
+copyFileSync(desktopPatchTestSource, desktopPatchTestTarget);
 copyFileSync(packageSource, packageTarget);
 if (existsSync(lockSource)) copyFileSync(lockSource, lockTarget);
 execFileSync(packageBunPath, ["install", "--production", "--frozen-lockfile"], { cwd: installDir, stdio: "inherit" });
 chmodSync(helperTarget, 0o700);
 chmodSync(proxyTarget, 0o700);
 chmodSync(desktopPatchTarget, 0o700);
+chmodSync(desktopPatchTestTarget, 0o700);
 writeFileSync(launcherTarget, launcherContent, { mode: 0o700 });
 writeFileSync(modelCatalogTarget, `${JSON.stringify(buildModelCatalog(), null, 2)}\n`, { mode: 0o600 });
 mkdirSync(agentRoleDir, { recursive: true, mode: 0o700 });
@@ -442,6 +446,7 @@ console.log(JSON.stringify({
   helper: helperTarget,
   proxy: proxyTarget,
   desktopPatch: desktopPatchTarget,
+  desktopPatchTest: desktopPatchTestTarget,
   launcher: launcherTarget,
   modelCatalog: modelCatalogTarget,
   config: configPath,

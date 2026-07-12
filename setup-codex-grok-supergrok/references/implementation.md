@@ -95,8 +95,10 @@ It also writes `~/Library/LaunchAgents/com.codex.xai-grok-proxy.plist`.
 - The token refresh lock prevents concurrent refresh-token races.
 - The proxy listens only on loopback.
 - Debug request logging is off by default and redacts bearer headers when enabled.
-- The ASAR patch refuses zero or multiple matches.
+- The ASAR patch refuses zero or multiple matches and serializes inspect/patch/restore operations with a process lock.
 - Rollback material is saved before any bundle mutation.
+- Restore state records the exact app version, build, original ASAR hash, and patched ASAR hash. Restore refuses to overwrite an updated or replaced app whose identity no longer matches.
+- Patched ASAR replacement is atomic, post-backup patch failures roll back automatically, and the setup orchestrator launch-tests the app instead of treating code-signature validity as sufficient.
 - The app is ad-hoc signed after its ASAR integrity hash is updated. This replaces the original top-level Apple signature; rollback restores the original executable, plist, ASAR, and signature directory.
 
 Risks remain: the OAuth client is derived from Hermes' public implementation, provider behavior and entitlements can change, the local proxy processes prompts and tool results, and an app update can overwrite or invalidate the Desktop patch.
@@ -114,14 +116,14 @@ On the original working machine, the idle proxy measured approximately 0.0% CPU 
 3. Run the installed OAuth helper with `login`; let the user approve in their browser.
 4. Confirm `status`, proxy `/health`, and a CLI Grok response through `--profile grok`.
 5. Restart Desktop and verify a fresh Sol or Terra task can spawn `grok_4_5_subagent` with V1 no-context delegation. Confirm persisted parent/child metadata and substantive child tool use.
-6. Inspect the Desktop ASAR and require exactly one known routing hook only when direct Grok root-model selection is required.
+6. Unless `CODEX_XAI_DESKTOP_PATCH=0`, inspect the Desktop ASAR and require exactly one known routing hook so direct Grok root-model selection works in the app.
 7. Quit Desktop. If Dock Extra keeps the app alive, identify the exact main PID before requesting permission to terminate it.
 8. Apply the patch, inspect again, and verify code signing.
 9. Reopen Desktop and test a new Grok root task plus a new normal OpenAI task.
 
 ## Update and recovery behavior
 
-Desktop updates normally replace `app.asar`, so model-picker visibility may remain while provider routing disappears. Codex updates can also refresh `models_cache.json`, so rerun the installer to regenerate the managed catalog and restore the Sol/Terra V1 pins, their delegation guidance, and the standalone agent role. Re-run `inspect` after every Desktop update when direct Grok root selection is used. Reapply only when the original hook matches exactly once. If the hook changed, extract the new ASAR, trace the new-thread request builder, and update the patch with a new exact guard.
+The patch ad-hoc signs the app bundle, so restore the original bundle and Apple signature material before using the in-app updater. Restore only when `inspect` reports `stateMatchesCurrent: true`; otherwise reinstall the official app instead of applying stale backups. After the official update succeeds, fully quit the app and run `bun "${CODEX_HOME:-$HOME/.codex}/skills/setup-codex-grok-supergrok/scripts/setup.js" --desktop-patch-only` exactly once. Do not pair it with a deferred background patch. Model-picker visibility may remain after an update while provider routing disappears. Codex updates can also refresh `models_cache.json`, so rerun the full installer when needed to regenerate the managed catalog and restore the Sol/Terra V1 pins, their delegation guidance, and the standalone agent role. Reapply only when the original hook matches exactly once. If the hook changed, extract the new ASAR, trace the new-thread request builder, and update the patch with a new exact guard.
 
 If the app fails to launch, restore immediately with the patcher's `restore` command. If restore cannot run, reinstalling the official app restores the vendor bundle but does not remove the local provider, proxy, OAuth store, or model catalog from `CODEX_HOME`.
 
