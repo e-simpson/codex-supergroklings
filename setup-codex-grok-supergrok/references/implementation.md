@@ -31,7 +31,7 @@ The setup has six layers:
 5. `patch-desktop-grok-provider.js` changes the new-thread parameter builder so only the configured Grok model gets `modelProvider: "xai-grok-oauth"`. Other models keep `modelProvider: null` and therefore preserve normal ChatGPT account behavior.
 6. `~/.codex/agents/grok-4.5-subagent.toml` pins the native agent role `grok_4_5_subagent` to Grok through the xAI provider. The managed catalog pins both `gpt-5.6-sol` and `gpt-5.6-terra` to Multi-Agent V1, and appends narrowly scoped delegation guidance to those roots, so delegated task text remains compatible with external providers.
 
-The role uses a punctuation-free Grok-family nickname pool (`Grok`, `Groki`, `Groku`, `Groko`, `Grokette`, `Grokis`, and other bundled candidates). Codex requires candidates to be unique and composed only of ASCII letters, digits, spaces, hyphens, and underscores; using the display-model spelling `Grok 4.5` invalidates the whole role because of the period. Multiple concurrent agents also require unique active nicknames, so the installer supplies distinct names rather than a single repeated candidate.
+The role uses a 30-name, punctuation-free Grok-family nickname pool (`Grok`, `Groki`, `Groku`, `Groko`, `Grokette`, `Grokis`, and other bundled candidates). Codex requires candidates to be unique and composed only of ASCII letters, digits, spaces, hyphens, and underscores; using the display-model spelling `Grok 4.5` invalidates the whole role because of the period. Multiple concurrent agents also require unique active nicknames, so the installer supplies distinct names rather than a single repeated candidate.
 
 ## Why root-to-Grok delegation uses V1
 

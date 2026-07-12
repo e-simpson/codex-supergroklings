@@ -113,7 +113,7 @@ ${providerBlock}
 
 const agentRoleContent = `name = "grok_4_5_subagent"
 description = "General-purpose Grok 4.5 subagent for independent reasoning, implementation, review, research, and edge-case analysis delegated by a stronger orchestrating agent. Use when a heterogeneous second model can improve accuracy, coverage, or token efficiency."
-nickname_candidates = ["Grok", "Groki", "Groku", "Groko", "Grokette", "Grokis", "Groka", "Grokin", "Groker", "Grokster", "Grokling", "Grokbot"]
+nickname_candidates = ["Grok", "Groki", "Groku", "Groko", "Grokette", "Grokis", "Groka", "Grokin", "Groker", "Grokster", "Grokling", "Grokbot", "Groklet", "Grokkin", "Grokaroo", "Grokito", "Grokana", "Grokino", "Grokson", "Grokbert", "Grokley", "Grokton", "Groktopus", "Grokonaut", "Grokzilla", "Grokwise", "Groksmith", "Grokpilot", "Grokscout", "Grokspark"]
 model = ${tomlString(modelId)}
 model_provider = "${providerId}"
 model_reasoning_effort = "high"
