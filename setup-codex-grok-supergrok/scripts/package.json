@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "setup": "bun setup.js"
+    "setup": "bun setup.js",
+    "test:desktop-patcher": "bun test-desktop-patcher.js"
   },
   "dependencies": {
     "@electron/asar": "3.2.18"

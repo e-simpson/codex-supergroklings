@@ -25,6 +25,8 @@ Read [implementation.md](references/implementation.md) before changing a machine
 - Require exactly one known Desktop hook match. Refuse unknown builds.
 - Back up `app.asar`, `Info.plist`, the main executable, and `_CodeSignature` before patching.
 - Do not patch while the ChatGPT main process or a renderer is active.
+- Never schedule a deferred/background patch that can overlap with a manual command. Have the user quit the app and run `--desktop-patch-only` exactly once; the patcher lock rejects concurrent mutation.
+- Treat signature verification as necessary but insufficient. Launch the patched app, require a live main/renderer process, and automatically restore the matching vendor backup if launch verification fails.
 - Explain that app updates may replace the patch and that xAI can change subscription entitlements or model IDs.
 
 ## Prerequisites
@@ -36,13 +38,13 @@ Confirm:
 - Codex CLI is available as `codex`, or `CODEX_BIN` is known.
 - The user has an active SuperGrok or eligible X Premium+ subscription.
 - Codex Desktop and the Codex CLI are installed, the user is signed in, and the model picker has loaded `gpt-5.6-sol` or `gpt-5.6-terra` at least once. A clean, fully installed Codex app is sufficient; no previous Grok configuration is required.
-- The user accepts an unofficial integration. Require separate explicit acceptance for the optional app-bundle patch and ad-hoc re-signing.
+- The user accepts an unofficial integration. Desktop patching and ad-hoc re-signing are part of the default install because direct Grok selection in the app otherwise hits the ChatGPT-account gate. Explain this before running setup and honor `CODEX_XAI_DESKTOP_PATCH=0` when the user wants CLI and subagents only.
 
 Default to model ID `grok-4.5`. If the user's xAI account exposes a different ID, set `CODEX_XAI_MODEL` and `CODEX_XAI_MODEL_DISPLAY_NAME` consistently for installation and patching.
 
 ## Communication Contract
 
-Before starting, tell the user that the workflow will install a loopback proxy, local OAuth helper, provider/catalog entries, a native Grok role, and V1 routing/guidance for supported root models. Explain when browser authorization or a Codex restart is required. During work, announce each phase without exposing tokens. At completion, report what was installed, what was verified, what remains optional, and the exact next action if the user must restart.
+Before starting, tell the user that the workflow will install a loopback proxy, local OAuth helper, provider/catalog entries, a native Grok role, V1 routing/guidance for supported root models, and by default a guarded Desktop patch with ad-hoc re-signing. Explain when browser authorization, fully quitting the app, or a Codex restart is required. During work, announce each phase without exposing tokens. At completion, report what was installed, what was verified, whether the Desktop patch is active or pending, and the exact next action.
 
 ## One-Session Core Install
 
@@ -52,7 +54,13 @@ For a clean but fully installed Codex app, run the bundled orchestrator:
 bun scripts/setup.js
 ```
 
-It installs the provider, proxy, catalog, native role, standard `$grok-subagents` companion skill, root-model guidance, and V1 configuration; starts device authorization only when no valid local OAuth session exists; verifies OAuth status, proxy health, and CLI routing; then tells the user to restart Codex Desktop. The browser authorization and restart are user-visible pauses, not failures. It intentionally does not patch the Desktop app: direct Grok root-model selection is optional and needs separate explicit approval.
+It installs the provider, proxy, catalog, native role, standard `$grok-subagents` companion skill, root-model guidance, and V1 configuration; starts device authorization only when no valid local OAuth session exists; verifies OAuth status, proxy health, and CLI routing; then inspects and patches the guarded Desktop routing hook by default. Because a running app cannot patch itself, setup may finish core verification with a pending command. Quit the app completely and run:
+
+```bash
+bun "${CODEX_HOME:-$HOME/.codex}/skills/setup-codex-grok-supergrok/scripts/setup.js" --desktop-patch-only
+```
+
+The resume command patches, verifies the guarded hook and signature, launches Codex, and requires a live app process. If launch fails, it restores and reopens the matching vendor bundle automatically. Browser authorization, app quit, and restart are user-visible pauses, not failures. Use `CODEX_XAI_DESKTOP_PATCH=0 bun scripts/setup.js` only when the user explicitly wants CLI and native Grok subagents without direct Grok root selection in Desktop.
 
 To enable automatic use of the companion skill for eligible bounded work, run the same setup with `CODEX_GROK_SUBAGENTS_MODE=aggressive`. Make this an explicit user choice because it can consume xAI subscription or rate-limit budget more often.
 
@@ -124,6 +132,8 @@ The Desktop ASAR provider-routing patch is not required for this root-to-Grok su
 
 ## Patch Desktop
 
+This is part of the default one-session install. Use these steps manually for diagnosis, recovery, or reapplying the patch after an app update.
+
 1. Inspect without modifying:
 
 ```bash
@@ -155,7 +165,7 @@ bun "${CODEX_HOME:-$HOME/.codex}/xai-grok-oauth/patch-desktop-grok-provider.js" 
 codesign --verify --deep --strict --verbose=2 /Applications/ChatGPT.app
 ```
 
-Require one `patched` entry and no unpatched match. Reopen Desktop, select Grok in a new task, and verify a real response. Existing tasks do not prove new-thread provider routing.
+Require one `patched` entry, no unpatched match, and `stateMatchesCurrent: true`. Signature verification alone does not prove launchability. Use the setup resume command to launch-test with automatic restore, then select Grok in a new task and verify a real response. Existing tasks do not prove new-thread provider routing.
 
 ## Diagnose
 
@@ -169,6 +179,8 @@ Require one `patched` entry and no unpatched match. Reopen Desktop, select Grok 
 - `unknown agent_type 'grok_4_5_subagent'` immediately after editing nicknames: validate every `nickname_candidates` entry. A period such as the one in `Grok 4.5` invalidates the profile; reinstall the managed punctuation-free Grok-family candidates and restart Codex.
 - Patcher says the app is running after all windows close: inspect parent PIDs. Dock Extra may keep the main executable alive.
 - `Expected exactly one Grok provider hook, found 0`: an app update changed minified code. Stop and audit the new ASAR.
+- `Desktop is patched but does not have matching active build/hash restore state`: the app path was replaced, renamed, updated, or patched by an older unsafe workflow. Do not run restore against that state; reinstall the official app and run one fresh patch.
+- `Another Desktop patch operation is already running`: wait for that exact process to finish or confirm it is stale. Do not start a second patcher or deferred job.
 - Grok disappears after an app update: rerun `inspect`; reinstall/reapply only if the known hook still matches exactly once.
 
 ## Roll Back
@@ -186,6 +198,27 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.codex.xai-grok-
 ```
 
 Restore the timestamped `config.toml.bak-xai-grok-oauth-*` file only after comparing it with the current config so unrelated user changes are preserved.
+
+## Update Desktop Safely
+
+The patch ad-hoc signs the app bundle, so the in-app updater may fail while it is active. To update:
+
+1. Quit ChatGPT/Codex completely.
+2. Restore the vendor app and signature:
+
+```bash
+bun "${CODEX_HOME:-$HOME/.codex}/xai-grok-oauth/patch-desktop-grok-provider.js" restore
+```
+
+3. Reopen the app and install the official update.
+4. Quit the updated app completely.
+5. Re-run the installer from the skill directory, or resume only the default Desktop step:
+
+```bash
+bun "${CODEX_HOME:-$HOME/.codex}/skills/setup-codex-grok-supergrok/scripts/setup.js" --desktop-patch-only
+```
+
+The guarded inspection must find exactly one known hook on the updated build. If it finds zero or multiple matches, stop and update the patcher instead of broadening the replacement.
 
 ## Standalone Prompt
 

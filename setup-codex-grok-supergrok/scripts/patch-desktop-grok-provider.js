@@ -2,12 +2,16 @@
 
 import {
   copyFileSync,
+  closeSync,
   cpSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
+  readSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -23,6 +27,7 @@ const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
 const installDir = join(codexHome, "xai-grok-oauth");
 const patchDir = join(installDir, "desktop-patch");
 const statePath = join(patchDir, "state.json");
+const lockDir = join(patchDir, "mutation.lock");
 const appBundle =
   process.env.CODEX_XAI_DESKTOP_APP ||
   [
@@ -34,6 +39,8 @@ const appBundle =
 const asarPath = join(appBundle, "Contents", "Resources", "app.asar");
 const infoPlistPath = join(appBundle, "Contents", "Info.plist");
 const asar = process.env.ASAR || join(installDir, "node_modules", ".bin", "asar");
+const codesign = process.env.CODEX_XAI_CODESIGN || "codesign";
+const plistBuddy = process.env.CODEX_XAI_PLIST_BUDDY || "/usr/libexec/PlistBuddy";
 
 const before =
   "else d=null;if(a){let e=await a();if(e)for(let[t,n]of Object.entries(e))l[t]=n}return{cwd:r,model:e,modelProvider:d,";
@@ -52,7 +59,8 @@ function usage() {
 
 Environment:
   CODEX_XAI_DESKTOP_APP=/Applications/ChatGPT.app
-  ASAR=/path/to/asar`);
+  ASAR=/path/to/asar
+  CODEX_XAI_CODESIGN=/usr/bin/codesign`);
 }
 
 function timestamp() {
@@ -63,13 +71,51 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function readAsarHeaderHash(file) {
-  const bytes = readFileSync(file);
-  const headerJsonSize = bytes.readUInt32LE(12);
-  if (!Number.isFinite(headerJsonSize) || headerJsonSize <= 0) {
-    throw new Error(`Invalid ASAR header size in ${file}`);
+function sha256File(file) {
+  const hash = createHash("sha256");
+  const fd = openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    closeSync(fd);
   }
-  return sha256(bytes.subarray(16, 16 + headerJsonSize));
+  return hash.digest("hex");
+}
+
+function readFully(fd, buffer, position) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesRead = readSync(fd, buffer, offset, buffer.length - offset, position + offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return offset;
+}
+
+function readAsarHeaderHash(file) {
+  const fd = openSync(file, "r");
+  const prefix = Buffer.alloc(16);
+  try {
+    if (readFully(fd, prefix, 0) !== prefix.length) {
+      throw new Error(`Cannot read ASAR prefix from ${file}`);
+    }
+    const headerJsonSize = prefix.readUInt32LE(12);
+    if (!Number.isFinite(headerJsonSize) || headerJsonSize <= 0) {
+      throw new Error(`Invalid ASAR header size in ${file}`);
+    }
+    const header = Buffer.alloc(headerJsonSize);
+    if (readFully(fd, header, 16) !== header.length) {
+      throw new Error(`Cannot read complete ASAR header from ${file}`);
+    }
+    return sha256(header);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function run(command, args, options = {}) {
@@ -81,12 +127,72 @@ function output(command, args) {
 }
 
 function appExecutablePath() {
-  const executable = output("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleExecutable", infoPlistPath]);
+  const executable = output(plistBuddy, ["-c", "Print :CFBundleExecutable", infoPlistPath]);
   return join(appBundle, "Contents", "MacOS", executable);
+}
+
+function appIdentity() {
+  const executablePath = appExecutablePath();
+  return {
+    bundleVersion: output(plistBuddy, ["-c", "Print :CFBundleShortVersionString", infoPlistPath]),
+    bundleBuild: output(plistBuddy, ["-c", "Print :CFBundleVersion", infoPlistPath]),
+    asarHash: sha256File(asarPath),
+    infoPlistHash: sha256File(infoPlistPath),
+    executablePath,
+    executableHash: sha256File(executablePath),
+  };
 }
 
 function copyDirectory(source, destination) {
   if (existsSync(source)) cpSync(source, destination, { recursive: true, preserveTimestamps: true });
+}
+
+function replaceDirectory(source, destination) {
+  rmSync(destination, { recursive: true, force: true });
+  copyDirectory(source, destination);
+}
+
+function pidIsRunning(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireMutationLock() {
+  mkdirSync(patchDir, { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(lockDir, { mode: 0o700 });
+      writeFileSync(join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, {
+        mode: 0o600,
+      });
+      return;
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "EEXIST") throw error;
+      let owner = null;
+      try {
+        owner = JSON.parse(readFileSync(join(lockDir, "owner.json"), "utf8"));
+      } catch {}
+      if (pidIsRunning(owner?.pid)) {
+        throw new Error(`Another Desktop patch operation is already running as PID ${owner.pid}.`);
+      }
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+  }
+  throw new Error("Could not acquire the Desktop patch lock.");
+}
+
+function withMutationLock(operation) {
+  acquireMutationLock();
+  try {
+    return operation();
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
 }
 
 function appProcesses() {
@@ -144,6 +250,41 @@ function packAsar(src, dest) {
   run(asar, ["pack", src, dest], { maxBuffer: 64 * 1024 * 1024 });
 }
 
+function readState() {
+  return existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : null;
+}
+
+function verifyMatchingActiveState(identity) {
+  const state = readState();
+  if (!state?.active) {
+    throw new Error("Desktop contains the Grok patch but has no active restore state. Reinstall the official app before patching again.");
+  }
+  if (state.appBundle !== appBundle) {
+    throw new Error(`Desktop patch state belongs to ${state.appBundle}, not ${appBundle}.`);
+  }
+  if (!state.patchedAsarHash || !state.bundleVersion || !state.bundleBuild) {
+    throw new Error("Desktop patch state predates safe build/hash validation. Reinstall the official app before patching again.");
+  }
+  if (
+    state.patchedAsarHash !== identity.asarHash ||
+    state.bundleVersion !== identity.bundleVersion ||
+    state.bundleBuild !== identity.bundleBuild
+  ) {
+    throw new Error("Desktop is patched, but its build or ASAR does not match the active restore state. Refusing unsafe recovery.");
+  }
+  return state;
+}
+
+function restoreBackups(state) {
+  for (const file of [state.asarBackup, state.plistBackup, state.executableBackup, state.codeSignatureBackup]) {
+    if (!file || !existsSync(file)) throw new Error(`Missing required backup: ${file}`);
+  }
+  copyFileSync(state.asarBackup, asarPath);
+  copyFileSync(state.plistBackup, infoPlistPath);
+  copyFileSync(state.executableBackup, state.executablePath || appExecutablePath());
+  replaceDirectory(state.codeSignatureBackup, state.codeSignaturePath || join(appBundle, "Contents", "_CodeSignature"));
+}
+
 function patch() {
   if (!existsSync(appBundle) || !existsSync(asarPath) || !existsSync(infoPlistPath)) {
     throw new Error(`Cannot find a patchable app bundle at ${appBundle}`);
@@ -154,12 +295,18 @@ function patch() {
   const workDir = mkdtempSync(join(tmpdir(), "codex-xai-grok-desktop-"));
   const extractDir = join(workDir, "app");
   const patchedAsar = join(workDir, "app.asar");
+  const stagedAsar = `${asarPath}.codex-xai-grok.tmp`;
   mkdirSync(patchDir, { recursive: true, mode: 0o700 });
+  let rollbackState = null;
+  let appMutated = false;
 
   try {
     extractAsar(extractDir);
     const inspected = inspectExtracted(extractDir);
     if (inspected.patched.length > 0 && inspected.matches.length === 0) {
+      const identity = appIdentity();
+      verifyMatchingActiveState(identity);
+      run(codesign, ["--verify", "--deep", "--strict", "--verbose=2", appBundle]);
       console.log(JSON.stringify({ status: "already-patched", appBundle, files: inspected.patched }, null, 2));
       return;
     }
@@ -179,19 +326,36 @@ function patch() {
     const executableBackup = join(patchDir, `executable.${stamp}.bak`);
     const codeSignaturePath = join(appBundle, "Contents", "_CodeSignature");
     const codeSignatureBackup = join(patchDir, `_CodeSignature.${stamp}.bak`);
+    if (!existsSync(codeSignaturePath)) throw new Error(`Missing original app signature at ${codeSignaturePath}`);
+    const originalIdentity = appIdentity();
     copyFileSync(asarPath, asarBackup);
     copyFileSync(infoPlistPath, plistBackup);
     copyFileSync(executablePath, executableBackup);
     copyDirectory(codeSignaturePath, codeSignatureBackup);
-    copyFileSync(patchedAsar, asarPath);
+    rollbackState = {
+      asarBackup,
+      plistBackup,
+      executablePath,
+      executableBackup,
+      codeSignaturePath,
+      codeSignatureBackup,
+    };
+    if (existsSync(statePath)) {
+      copyFileSync(statePath, join(patchDir, `state.${stamp}.stale.json`));
+    }
+    copyFileSync(patchedAsar, stagedAsar);
+    appMutated = true;
+    renameSync(stagedAsar, asarPath);
 
     const headerHash = readAsarHeaderHash(asarPath);
-    run("/usr/libexec/PlistBuddy", [
+    run(plistBuddy, [
       "-c",
       `Set :ElectronAsarIntegrity:Resources/app.asar:hash ${headerHash}`,
       infoPlistPath,
     ]);
-    run("codesign", ["--force", "--sign", "-", appBundle]);
+    run(codesign, ["--force", "--sign", "-", appBundle]);
+    run(codesign, ["--verify", "--deep", "--strict", "--verbose=2", appBundle]);
+    const patchedIdentity = appIdentity();
 
     const state = {
       active: true,
@@ -200,6 +364,8 @@ function patch() {
       infoPlistPath,
       modelId,
       providerId,
+      bundleVersion: originalIdentity.bundleVersion,
+      bundleBuild: originalIdentity.bundleBuild,
       targetFile: target.replace(`${extractDir}/`, ""),
       patchedAt: new Date().toISOString(),
       asarBackup,
@@ -208,12 +374,31 @@ function patch() {
       executableBackup,
       codeSignaturePath,
       codeSignatureBackup: existsSync(codeSignatureBackup) ? codeSignatureBackup : null,
+      originalAsarHash: originalIdentity.asarHash,
+      patchedAsarHash: patchedIdentity.asarHash,
+      originalInfoPlistHash: originalIdentity.infoPlistHash,
+      patchedInfoPlistHash: patchedIdentity.infoPlistHash,
+      originalExecutableHash: originalIdentity.executableHash,
+      patchedExecutableHash: patchedIdentity.executableHash,
       headerHash,
       appAsarSize: statSync(asarPath).size,
     };
     writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     console.log(JSON.stringify({ status: "patched", ...state }, null, 2));
+  } catch (error) {
+    if (appMutated && rollbackState) {
+      try {
+        restoreBackups(rollbackState);
+        run(codesign, ["--verify", "--deep", "--strict", "--verbose=2", appBundle]);
+      } catch (rollbackError) {
+        throw new Error(
+          `Desktop patch failed and automatic rollback also failed: ${String(error)}; rollback: ${String(rollbackError)}`,
+        );
+      }
+    }
+    throw error;
   } finally {
+    rmSync(stagedAsar, { force: true });
     rmSync(workDir, { recursive: true, force: true });
   }
 }
@@ -226,19 +411,29 @@ function restore() {
   if (state.appBundle !== appBundle) {
     throw new Error(`Patch state belongs to ${state.appBundle}, not ${appBundle}`);
   }
+  if (!state.active) {
+    console.log(JSON.stringify({ status: "already-restored", appBundle, restoredAt: state.restoredAt || null }, null, 2));
+    return;
+  }
   ensurePatchableAppNotRunning();
-  for (const file of [state.asarBackup, state.plistBackup, state.executableBackup]) {
-    if (!file || !existsSync(file)) throw new Error(`Missing required backup: ${file}`);
+  if (!state.patchedAsarHash || !state.bundleVersion || !state.bundleBuild) {
+    throw new Error("Restore state predates safe build/hash validation. Refusing to overwrite the current app; reinstall the official app instead.");
   }
-
-  copyFileSync(state.asarBackup, asarPath);
-  copyFileSync(state.plistBackup, infoPlistPath);
-  copyFileSync(state.executableBackup, state.executablePath || appExecutablePath());
-  if (state.codeSignatureBackup && existsSync(state.codeSignatureBackup)) {
-    copyDirectory(state.codeSignatureBackup, state.codeSignaturePath || join(appBundle, "Contents", "_CodeSignature"));
+  const currentIdentity = appIdentity();
+  verifyMatchingActiveState(currentIdentity);
+  restoreBackups(state);
+  run(codesign, ["--verify", "--deep", "--strict", "--verbose=2", appBundle]);
+  const restoredIdentity = appIdentity();
+  if (
+    restoredIdentity.asarHash !== state.originalAsarHash ||
+    restoredIdentity.bundleVersion !== state.bundleVersion ||
+    restoredIdentity.bundleBuild !== state.bundleBuild
+  ) {
+    throw new Error("Restore completed but the restored app identity does not match its recorded original state.");
   }
-  writeFileSync(statePath, `${JSON.stringify({ ...state, active: false, restoredAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
-  console.log(JSON.stringify({ status: "restored", appBundle, restoredAt: new Date().toISOString() }, null, 2));
+  const restoredAt = new Date().toISOString();
+  writeFileSync(statePath, `${JSON.stringify({ ...state, active: false, restoredAt }, null, 2)}\n`, { mode: 0o600 });
+  console.log(JSON.stringify({ status: "restored", appBundle, restoredAt }, null, 2));
 }
 
 function inspect() {
@@ -250,7 +445,16 @@ function inspect() {
   try {
     extractAsar(workDir);
     const inspected = inspectExtracted(workDir);
-    console.log(JSON.stringify({ appBundle, asarPath, ...inspected }, null, 2));
+    const identity = appIdentity();
+    const state = readState();
+    const stateMatchesCurrent = Boolean(
+      state?.active &&
+      state.appBundle === appBundle &&
+      state.patchedAsarHash === identity.asarHash &&
+      state.bundleVersion === identity.bundleVersion &&
+      state.bundleBuild === identity.bundleBuild
+    );
+    console.log(JSON.stringify({ appBundle, asarPath, ...identity, stateMatchesCurrent, ...inspected }, null, 2));
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
@@ -258,9 +462,9 @@ function inspect() {
 
 const command = process.argv[2] || "inspect";
 try {
-  if (command === "patch") patch();
-  else if (command === "restore") restore();
-  else if (command === "inspect") inspect();
+  if (command === "patch") withMutationLock(patch);
+  else if (command === "restore") withMutationLock(restore);
+  else if (command === "inspect") withMutationLock(inspect);
   else {
     usage();
     process.exit(2);
